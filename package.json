@@ -12,7 +12,9 @@
     "types": "wrangler types",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {},
+  "dependencies": {
+    "hono": "^4.11.6"
+  },
   "devDependencies": {
     "@cloudflare/sandbox": "*",
     "@cloudflare/workers-types": "^4.20250109.0",

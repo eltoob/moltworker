@@ -19,14 +19,16 @@
  * - SLACK_BOT_TOKEN + SLACK_APP_TOKEN: Slack tokens
  */
 
+import { Hono } from 'hono';
 import { getSandbox, Sandbox } from '@cloudflare/sandbox';
 import type { Process } from '@cloudflare/sandbox';
 
 export { Sandbox };
 
 const CLAWDBOT_PORT = 18789;
-const STARTUP_TIMEOUT_MS = 120_000; // 2 minutes for clawdbot to start (it needs to install deps etc)
+const STARTUP_TIMEOUT_MS = 120_000; // 2 minutes for clawdbot to start
 
+// Types
 interface ClawdbotEnv {
   Sandbox: DurableObjectNamespace<Sandbox>;
   ANTHROPIC_API_KEY?: string;
@@ -40,67 +42,34 @@ interface ClawdbotEnv {
   DISCORD_DM_POLICY?: string;
   SLACK_BOT_TOKEN?: string;
   SLACK_APP_TOKEN?: string;
+  // TODO: Change default to 'false' before production release
+  DEBUG_ROUTES_ENABLED?: string;
 }
 
-/**
- * Build environment variables object from Worker env
- */
+type AppEnv = { Bindings: ClawdbotEnv; Variables: { sandbox: Sandbox } };
+
+// Helper functions
 function buildEnvVars(env: ClawdbotEnv): Record<string, string> {
   const envVars: Record<string, string> = {};
 
-  if (env.ANTHROPIC_API_KEY) {
-    envVars.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
-  }
-  if (env.OPENAI_API_KEY) {
-    envVars.OPENAI_API_KEY = env.OPENAI_API_KEY;
-  }
-  if (env.CLAWDBOT_GATEWAY_TOKEN) {
-    envVars.CLAWDBOT_GATEWAY_TOKEN = env.CLAWDBOT_GATEWAY_TOKEN;
-  }
-  if (env.CLAWDBOT_DEV_MODE) {
-    envVars.CLAWDBOT_DEV_MODE = env.CLAWDBOT_DEV_MODE;
-  }
-  if (env.CLAWDBOT_BIND_MODE) {
-    envVars.CLAWDBOT_BIND_MODE = env.CLAWDBOT_BIND_MODE;
-  }
-  if (env.TELEGRAM_BOT_TOKEN) {
-    envVars.TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
-  }
-  if (env.TELEGRAM_DM_POLICY) {
-    envVars.TELEGRAM_DM_POLICY = env.TELEGRAM_DM_POLICY;
-  }
-  if (env.DISCORD_BOT_TOKEN) {
-    envVars.DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN;
-  }
-  if (env.DISCORD_DM_POLICY) {
-    envVars.DISCORD_DM_POLICY = env.DISCORD_DM_POLICY;
-  }
-  if (env.SLACK_BOT_TOKEN) {
-    envVars.SLACK_BOT_TOKEN = env.SLACK_BOT_TOKEN;
-  }
-  if (env.SLACK_APP_TOKEN) {
-    envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
-  }
+  if (env.ANTHROPIC_API_KEY) envVars.ANTHROPIC_API_KEY = env.ANTHROPIC_API_KEY;
+  if (env.OPENAI_API_KEY) envVars.OPENAI_API_KEY = env.OPENAI_API_KEY;
+  if (env.CLAWDBOT_GATEWAY_TOKEN) envVars.CLAWDBOT_GATEWAY_TOKEN = env.CLAWDBOT_GATEWAY_TOKEN;
+  if (env.CLAWDBOT_DEV_MODE) envVars.CLAWDBOT_DEV_MODE = env.CLAWDBOT_DEV_MODE;
+  if (env.CLAWDBOT_BIND_MODE) envVars.CLAWDBOT_BIND_MODE = env.CLAWDBOT_BIND_MODE;
+  if (env.TELEGRAM_BOT_TOKEN) envVars.TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
+  if (env.TELEGRAM_DM_POLICY) envVars.TELEGRAM_DM_POLICY = env.TELEGRAM_DM_POLICY;
+  if (env.DISCORD_BOT_TOKEN) envVars.DISCORD_BOT_TOKEN = env.DISCORD_BOT_TOKEN;
+  if (env.DISCORD_DM_POLICY) envVars.DISCORD_DM_POLICY = env.DISCORD_DM_POLICY;
+  if (env.SLACK_BOT_TOKEN) envVars.SLACK_BOT_TOKEN = env.SLACK_BOT_TOKEN;
+  if (env.SLACK_APP_TOKEN) envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
 
   return envVars;
 }
 
-/**
- * Build the clawdbot gateway startup command
- */
-function buildStartupCommand(): string {
-  return '/usr/local/bin/start-clawdbot.sh';
-}
-
-/**
- * Find an existing Clawdbot gateway process
- */
-async function findExistingClawdbotProcess(
-  sandbox: Sandbox
-): Promise<Process | null> {
+async function findExistingClawdbotProcess(sandbox: Sandbox): Promise<Process | null> {
   try {
     const processes = await sandbox.listProcesses();
-
     for (const proc of processes) {
       if (
         proc.command.includes('start-clawdbot.sh') ||
@@ -114,18 +83,10 @@ async function findExistingClawdbotProcess(
   } catch (e) {
     console.log('Could not list processes:', e);
   }
-
   return null;
 }
 
-/**
- * Ensure Clawdbot gateway is running
- * Reuses existing process if one is already running
- */
-async function ensureClawdbotGateway(
-  sandbox: Sandbox,
-  env: ClawdbotEnv
-): Promise<Process> {
+async function ensureClawdbotGateway(sandbox: Sandbox, env: ClawdbotEnv): Promise<Process> {
   // Check if Clawdbot is already running or starting
   const existingProcess = await findExistingClawdbotProcess(sandbox);
   if (existingProcess) {
@@ -133,18 +94,13 @@ async function ensureClawdbotGateway(
 
     // Use longer timeout for "starting" processes to avoid race conditions
     const timeout = existingProcess.status === 'starting' ? STARTUP_TIMEOUT_MS : 30_000;
-    
+
     try {
       console.log('Waiting for Clawdbot gateway on port', CLAWDBOT_PORT, 'timeout:', timeout);
-      await existingProcess.waitForPort(CLAWDBOT_PORT, {
-        mode: 'tcp',
-        timeout,
-      });
+      await existingProcess.waitForPort(CLAWDBOT_PORT, { mode: 'tcp', timeout });
       console.log('Clawdbot gateway is reachable');
       return existingProcess;
     } catch (e) {
-      // Only kill and restart if the process is not "starting"
-      // If it's starting, another request is likely already handling it
       if (existingProcess.status !== 'starting') {
         console.log('Existing process not reachable, killing and restarting...');
         try {
@@ -156,20 +112,18 @@ async function ensureClawdbotGateway(
         console.log('Process still starting but port timeout - will retry');
         throw new Error('Clawdbot is still starting, please retry');
       }
-      // Fall through to start a new process
     }
   }
 
   // Start a new Clawdbot gateway
   console.log('Starting new Clawdbot gateway...');
-
   const envVars = buildEnvVars(env);
-  const command = buildStartupCommand();
+  const command = '/usr/local/bin/start-clawdbot.sh';
 
   console.log('Starting process with command:', command);
   console.log('Environment vars being passed:', Object.keys(envVars));
 
-  let process;
+  let process: Process;
   try {
     process = await sandbox.startProcess(command, {
       env: Object.keys(envVars).length > 0 ? envVars : undefined,
@@ -183,15 +137,9 @@ async function ensureClawdbotGateway(
   // Wait for the gateway to be ready
   try {
     console.log('Waiting for Clawdbot gateway to be ready on port', CLAWDBOT_PORT);
-    
-    // Use TCP mode - Clawdbot gateway uses WebSocket, not HTTP health endpoint
-    await process.waitForPort(CLAWDBOT_PORT, {
-      mode: 'tcp',
-      timeout: STARTUP_TIMEOUT_MS,
-    });
+    await process.waitForPort(CLAWDBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
     console.log('Clawdbot gateway is ready!');
-    
-    // Log process output for debugging
+
     const logs = await process.getLogs();
     if (logs.stdout) console.log('Clawdbot stdout:', logs.stdout);
     if (logs.stderr) console.log('Clawdbot stderr:', logs.stderr);
@@ -201,9 +149,7 @@ async function ensureClawdbotGateway(
       const logs = await process.getLogs();
       console.error('Clawdbot startup failed. Stderr:', logs.stderr);
       console.error('Clawdbot startup failed. Stdout:', logs.stdout);
-      throw new Error(
-        `Clawdbot gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`
-      );
+      throw new Error(`Clawdbot gateway failed to start. Stderr: ${logs.stderr || '(empty)'}`);
     } catch (logErr) {
       console.error('Failed to get logs:', logErr);
       throw e;
@@ -213,193 +159,193 @@ async function ensureClawdbotGateway(
   return process;
 }
 
-/**
- * Proxy a request to the Clawdbot gateway
- */
-async function proxyToClawdbot(
-  request: Request,
-  sandbox: Sandbox
-): Promise<Response> {
+// Debug routes sub-router
+const debug = new Hono<AppEnv>();
+
+// GET /debug/version - Returns build info from inside the container
+debug.get('/version', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    // Read the build info file
+    const buildProcess = await sandbox.startProcess('cat /root/.clawdbot/build-info.json');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const buildLogs = await buildProcess.getLogs();
+
+    let buildInfo = null;
+    try {
+      buildInfo = JSON.parse(buildLogs.stdout || '{}');
+    } catch {
+      // File might not exist in older deployments
+    }
+
+    // Also get clawdbot version
+    const versionProcess = await sandbox.startProcess('clawdbot --version');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    const versionLogs = await versionProcess.getLogs();
+    const clawdbotVersion = (versionLogs.stdout || versionLogs.stderr || '').trim();
+
+    return c.json({
+      container: buildInfo || { error: 'build-info.json not found (older deployment?)' },
+      clawdbot_version: clawdbotVersion,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ status: 'error', message: `Failed to get version info: ${errorMessage}` }, 500);
+  }
+});
+
+// GET /debug/processes - List all processes with optional logs
+debug.get('/processes', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    const processes = await sandbox.listProcesses();
+    const includeLogs = c.req.query('logs') === 'true';
+
+    const processData = await Promise.all(processes.map(async p => {
+      const data: Record<string, unknown> = {
+        id: p.id,
+        command: p.command,
+        status: p.status,
+      };
+
+      if (includeLogs) {
+        try {
+          const logs = await p.getLogs();
+          data.stdout = logs.stdout || '';
+          data.stderr = logs.stderr || '';
+        } catch {
+          data.logs_error = 'Failed to retrieve logs';
+        }
+      }
+
+      return data;
+    }));
+
+    return c.json({ count: processes.length, processes: processData });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// GET /debug/logs - Returns container logs for debugging
+debug.get('/logs', async (c) => {
+  const sandbox = c.get('sandbox');
+  try {
+    const processId = c.req.query('id');
+    let process: Process | null | undefined;
+
+    if (processId) {
+      const processes = await sandbox.listProcesses();
+      process = processes.find(p => p.id === processId);
+      if (!process) {
+        return c.json({
+          status: 'not_found',
+          message: `Process ${processId} not found`,
+          stdout: '',
+          stderr: '',
+        }, 404);
+      }
+    } else {
+      process = await findExistingClawdbotProcess(sandbox);
+      if (!process) {
+        return c.json({
+          status: 'no_process',
+          message: 'No Clawdbot process is currently running',
+          stdout: '',
+          stderr: '',
+        });
+      }
+    }
+
+    const logs = await process.getLogs();
+    return c.json({
+      status: 'ok',
+      process_id: process.id,
+      process_status: process.status,
+      stdout: logs.stdout || '',
+      stderr: logs.stderr || '',
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({
+      status: 'error',
+      message: `Failed to get logs: ${errorMessage}`,
+      stdout: '',
+      stderr: '',
+    }, 500);
+  }
+});
+
+// Main app
+const app = new Hono<AppEnv>();
+
+// Middleware: Initialize sandbox for all requests
+app.use('*', async (c, next) => {
+  const sandbox = getSandbox(c.env.Sandbox, 'clawdbot');
+  c.set('sandbox', sandbox);
+  await next();
+});
+
+// Health check endpoint (before starting clawdbot)
+app.get('/sandbox-health', (c) => {
+  return c.json({
+    status: 'ok',
+    service: 'clawdbot-sandbox',
+    gateway_port: CLAWDBOT_PORT,
+  });
+});
+
+// Mount debug routes (protected by env var)
+// TODO: Change default to false before production release!
+// These routes expose sensitive information about processes and logs
+app.use('/debug/*', async (c, next) => {
+  const debugEnabled = c.env.DEBUG_ROUTES_ENABLED !== 'false'; // Default: true (TODO: flip to false)
+  if (!debugEnabled) {
+    return c.json({ error: 'Debug routes are disabled' }, 404);
+  }
+  await next();
+});
+app.route('/debug', debug);
+
+// All other routes: ensure clawdbot is running and proxy
+app.all('*', async (c) => {
+  const sandbox = c.get('sandbox');
+  const request = c.req.raw;
+
+  // Ensure Clawdbot is running
+  try {
+    await ensureClawdbotGateway(sandbox, c.env);
+  } catch (error) {
+    console.error('Failed to start Clawdbot:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+    let hint = 'Check worker logs with: wrangler tail';
+    if (!c.env.ANTHROPIC_API_KEY) {
+      hint = 'ANTHROPIC_API_KEY is not set. Run: wrangler secret put ANTHROPIC_API_KEY';
+    } else if (errorMessage.includes('heap out of memory') || errorMessage.includes('OOM')) {
+      hint = 'Gateway ran out of memory. Try again or check for memory leaks.';
+    }
+
+    return c.json({
+      error: 'Clawdbot gateway failed to start',
+      details: errorMessage,
+      hint,
+    }, 503);
+  }
+
+  // Proxy to Clawdbot
   const url = new URL(request.url);
-  
-  // Check if this is a WebSocket upgrade request
+
   if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
     console.log('Proxying WebSocket connection to Clawdbot');
     console.log('WebSocket URL:', request.url);
     console.log('WebSocket search params:', url.search);
     return sandbox.wsConnect(request, CLAWDBOT_PORT);
   }
-  
-  // Regular HTTP request
+
   console.log('Proxying HTTP request:', url.pathname + url.search);
   return sandbox.containerFetch(request, CLAWDBOT_PORT);
-}
+});
 
-export default {
-  async fetch(request: Request, env: ClawdbotEnv): Promise<Response> {
-    const url = new URL(request.url);
-    const sandbox = getSandbox(env.Sandbox, 'clawdbot');
-
-    // Health check endpoint (before starting clawdbot)
-    if (url.pathname === '/sandbox-health') {
-      return Response.json({
-        status: 'ok',
-        service: 'clawdbot-sandbox',
-        gateway_port: CLAWDBOT_PORT,
-      });
-    }
-
-    // Version endpoint - returns build info from inside the container
-    if (url.pathname === '/version') {
-      try {
-        // Read the build info file that was baked into the container at deploy time
-        const process = await sandbox.startProcess('cat /root/.clawdbot/build-info.json');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const logs = await process.getLogs();
-        
-        let buildInfo = null;
-        try {
-          buildInfo = JSON.parse(logs.stdout || '{}');
-        } catch {
-          // File might not exist in older deployments
-        }
-
-        // Also get clawdbot version
-        const versionProcess = await sandbox.startProcess('clawdbot --version');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        const versionLogs = await versionProcess.getLogs();
-        const clawdbotVersion = (versionLogs.stdout || versionLogs.stderr || '').trim();
-
-        return Response.json({
-          container: buildInfo || { error: 'build-info.json not found (older deployment?)' },
-          clawdbot_version: clawdbotVersion,
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        return Response.json({
-          status: 'error',
-          message: `Failed to get version info: ${errorMessage}`,
-        }, { status: 500 });
-      }
-    }
-
-    // Debug endpoint - list all processes with optional logs
-    // Use ?logs=true to include logs for each process
-    if (url.pathname === '/processes') {
-      try {
-        const processes = await sandbox.listProcesses();
-        const includeLogs = url.searchParams.get('logs') === 'true';
-        
-        const processData = await Promise.all(processes.map(async p => {
-          const data: Record<string, unknown> = {
-            id: p.id,
-            command: p.command,
-            status: p.status,
-          };
-          
-          if (includeLogs) {
-            try {
-              const logs = await p.getLogs();
-              data.stdout = logs.stdout || '';
-              data.stderr = logs.stderr || '';
-            } catch {
-              data.logs_error = 'Failed to retrieve logs';
-            }
-          }
-          
-          return data;
-        }));
-        
-        return Response.json({
-          count: processes.length,
-          processes: processData,
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        return Response.json({ error: errorMessage }, { status: 500 });
-      }
-    }
-
-    // Logs endpoint - returns container logs for debugging
-    // Use ?id=proc_xxx to get logs for a specific process
-    if (url.pathname === '/logs') {
-      try {
-        const processId = url.searchParams.get('id');
-        let process;
-        
-        if (processId) {
-          // Find specific process by ID
-          const processes = await sandbox.listProcesses();
-          process = processes.find(p => p.id === processId);
-          if (!process) {
-            return Response.json({
-              status: 'not_found',
-              message: `Process ${processId} not found`,
-              stdout: '',
-              stderr: '',
-            }, { status: 404 });
-          }
-        } else {
-          // Find running clawdbot process
-          process = await findExistingClawdbotProcess(sandbox);
-          if (!process) {
-            return Response.json({
-              status: 'no_process',
-              message: 'No Clawdbot process is currently running',
-              stdout: '',
-              stderr: '',
-            });
-          }
-        }
-
-        const logs = await process.getLogs();
-        return Response.json({
-          status: 'ok',
-          process_id: process.id,
-          process_status: process.status,
-          stdout: logs.stdout || '',
-          stderr: logs.stderr || '',
-        });
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-        return Response.json({
-          status: 'error',
-          message: `Failed to get logs: ${errorMessage}`,
-          stdout: '',
-          stderr: '',
-        }, { status: 500 });
-      }
-    }
-
-    // Ensure Clawdbot is running
-    try {
-      await ensureClawdbotGateway(sandbox, env);
-    } catch (error) {
-      console.error('Failed to start Clawdbot:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      
-      // Provide helpful hints based on the error and configuration
-      let hint = 'Check worker logs with: wrangler tail';
-      if (!env.ANTHROPIC_API_KEY) {
-        hint = 'ANTHROPIC_API_KEY is not set. Run: wrangler secret put ANTHROPIC_API_KEY';
-      } else if (errorMessage.includes('heap out of memory') || errorMessage.includes('OOM')) {
-        hint = 'Gateway ran out of memory. Try again or check for memory leaks.';
-      }
-      
-      return new Response(
-        JSON.stringify({
-          error: 'Clawdbot gateway failed to start',
-          details: errorMessage,
-          hint,
-        }),
-        {
-          status: 503,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    // Proxy all requests to Clawdbot
-    return proxyToClawdbot(request, sandbox);
-  },
-};
+export default app;
