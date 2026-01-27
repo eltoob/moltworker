@@ -119,14 +119,32 @@ app.all('*', async (c) => {
 
   // Proxy to Clawdbot
   if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
-    console.log('Proxying WebSocket connection to Clawdbot');
-    console.log('WebSocket URL:', request.url);
-    console.log('WebSocket search params:', url.search);
-    return sandbox.wsConnect(request, CLAWDBOT_PORT);
+    console.log('[WS] Proxying WebSocket connection to Clawdbot');
+    console.log('[WS] URL:', request.url);
+    console.log('[WS] Search params:', url.search);
+    console.log('[WS] Headers:', JSON.stringify(Object.fromEntries(request.headers.entries())));
+    const wsResponse = await sandbox.wsConnect(request, CLAWDBOT_PORT);
+    console.log('[WS] wsConnect response status:', wsResponse.status);
+    console.log('[WS] wsConnect response headers:', JSON.stringify(Object.fromEntries(wsResponse.headers.entries())));
+    return wsResponse;
   }
 
-  console.log('Proxying HTTP request:', url.pathname + url.search);
-  return sandbox.containerFetch(request, CLAWDBOT_PORT);
+  console.log('[HTTP] Proxying request:', url.pathname + url.search);
+  console.log('[HTTP] Method:', request.method);
+  console.log('[HTTP] Headers:', JSON.stringify(Object.fromEntries(request.headers.entries())));
+  const httpResponse = await sandbox.containerFetch(request, CLAWDBOT_PORT);
+  console.log('[HTTP] Response status:', httpResponse.status);
+  console.log('[HTTP] Response headers:', JSON.stringify(Object.fromEntries(httpResponse.headers.entries())));
+  
+  // For chat page, log the body
+  if (url.pathname.includes('/chat')) {
+    const clonedResponse = httpResponse.clone();
+    const body = await clonedResponse.text();
+    console.log('[HTTP] Chat page body length:', body.length);
+    console.log('[HTTP] Chat page body preview:', body.substring(0, 500));
+  }
+  
+  return httpResponse;
 });
 
 /**
