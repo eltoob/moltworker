@@ -182,14 +182,14 @@ if (process.env.CLAWDBOT_DEV_MODE === 'true') {
     config.gateway.controlUi.allowInsecureAuth = true;
 }
 
-# // Telegram configuration
-# if (process.env.TELEGRAM_BOT_TOKEN) {
-#     config.channels.telegram = config.channels.telegram || {};
-#     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
-#     config.channels.telegram.enabled = true;
-#     config.channels.telegram.dm = config.channels.telegram.dm || {};
-#     config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
-# }
+// Telegram configuration
+// if (process.env.TELEGRAM_BOT_TOKEN) {
+//     config.channels.telegram = config.channels.telegram || {};
+//     config.channels.telegram.botToken = process.env.TELEGRAM_BOT_TOKEN;
+//     config.channels.telegram.enabled = true;
+//     config.channels.telegram.dm = config.channels.telegram.dm || {};
+//     config.channels.telegram.dmPolicy = process.env.TELEGRAM_DM_POLICY || 'pairing';
+// }
 
 // Discord configuration
 if (process.env.DISCORD_BOT_TOKEN) {
